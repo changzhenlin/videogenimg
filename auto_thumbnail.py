@@ -137,7 +137,7 @@ def has_face(frame):
     return False
 
 
-def generate_random_thumbnail(video_path, overwrite=True, quality=90, size=None):
+def generate_random_thumbnail(video_path, overwrite=True, quality=100, size=None):
     """为视频生成随机封面图"""
     if not os.path.isfile(video_path):
         print(f"❌ 文件不存在: {video_path}")
@@ -229,7 +229,7 @@ def generate_random_thumbnail(video_path, overwrite=True, quality=90, size=None)
     return False
 
 
-def process_single_video(path, overwrite=True, quality=90, size=None):
+def process_single_video(path, overwrite=True, quality=100, size=None):
     """处理单个视频文件"""
     if os.path.isfile(path):
         return generate_random_thumbnail(path, overwrite, quality, size)
@@ -251,8 +251,8 @@ def select_video_file():
 def main():
     parser = argparse.ArgumentParser(description="🎬 视频随机封面生成工具")
     parser.add_argument("--path", help="视频文件路径")
-    parser.add_argument("--quality", type=int, default=90,
-                        help="JPEG图片质量 (1-100)，默认90")
+    parser.add_argument("--quality", type=int, default=100,
+                        help="JPEG图片质量 (1-100)，默认100")
     parser.add_argument("--size", type=str, help="输出图片尺寸，格式为 'widthxheight'，例如 '1920x1080'")
     args = parser.parse_args()
 
