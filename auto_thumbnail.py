@@ -1,14 +1,26 @@
 import os
 import random
 import subprocess
-import argparse
 from contextlib import contextmanager
 from moviepy import VideoFileClip
 from PIL import Image
-import tkinter as tk
-from tkinter import filedialog
 import cv2
 import numpy as np
+from flask import Flask, render_template_string, request, jsonify, send_file
+import tempfile
+import shutil
+
+# Flask应用初始化
+app = Flask(__name__)
+
+# 配置目录
+ROOT_DIR = "/videos"  # NAS挂载目录
+TEMP_DIR = "/tmp/thumbnails"
+
+SUPPORTED_EXTS = [".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm"]
+
+# 确保临时目录存在
+os.makedirs(TEMP_DIR, exist_ok=True)
 
 
 def check_ffmpeg():
@@ -20,296 +32,516 @@ def check_ffmpeg():
         return False
 
 
-def is_ffmpeg_required():
-    """确定是否强制要求ffmpeg（在Windows系统上，可以尝试使用更友好的提示）"""
-    return True  # 默认仍然需要ffmpeg，但可以根据需要修改
-
-
 @contextmanager
 def get_video_clip(video_path):
     """上下文管理器，确保VideoFileClip正确关闭"""
     clip = None
     try:
-        # 尝试创建VideoFileClip对象
         clip = VideoFileClip(video_path)
         yield clip
-    except Exception as e:
-        # 捕获所有可能的异常，特别是ffmpeg相关的错误
-        error_msg = str(e).lower()
-        if "ffmpeg" in error_msg or "not found" in error_msg:
-            # 特别处理ffmpeg相关的错误
-            raise RuntimeError(f"❌ ffmpeg错误: 无法处理视频文件。请确保ffmpeg已正确安装并添加到系统路径。\n详细错误: {e}")
-        else:
-            # 其他错误重新抛出
-            raise
     finally:
-        # 确保资源正确释放，即使在异常情况下
         if clip is not None:
             try:
                 clip.close()
-            except Exception as close_error:
-                # 记录关闭时的错误，但不影响主流程
-                print(f"⚠️ 关闭视频时发生错误: {close_error}")
+            except Exception as e:
+                print(f"⚠️ 关闭视频时发生错误: {e}")
 
 
 def has_face(frame):
     """检测帧中是否包含人脸，使用多维度验证减少误判"""
-    # 转换为灰度图
     gray = cv2.cvtColor(np.array(frame), cv2.COLOR_RGB2GRAY)
-    
-    # 加载人脸检测器
+
     face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_frontalface_default.xml")
-    
-    # 加载眼睛检测器（作为额外验证）
-    eye_cascade = None
-    try:
-        eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
-    except Exception as e:
-        print(f"⚠️ 无法加载眼睛检测器: {e}")
-    
-    # 优化检测参数
+    eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + "haarcascade_eye.xml")
+
     frame_height, frame_width = gray.shape[:2]
-    min_size = (max(40, frame_width // 10), max(40, frame_height // 10))  # 增大最小尺寸要求
+    min_size = (max(40, frame_width // 10), max(40, frame_height // 10))
     max_size = (frame_width // 2, frame_height // 2)
-    
+
     faces = face_cascade.detectMultiScale(
-        gray, 
-        scaleFactor=1.3,     # 进一步增加到1.25
-        minNeighbors=12,      # 进一步增加到10
-        minSize=min_size,     
-        maxSize=max_size      
+        gray,
+        scaleFactor=1.3,
+        minNeighbors=12,
+        minSize=min_size,
+        maxSize=max_size
     )
-    
-    # 调试信息和增强验证
-    if len(faces) > 0:
-        print(f"🔍 人脸检测信息: 发现{len(faces)}个候选人脸区域")
-        
-        # 对每个检测到的区域进行额外验证
-        valid_faces = []
-        for (x, y, w, h) in faces:
-            # 1. 验证人脸宽高比（真实人脸通常接近1:1到1:1.5之间）
-            aspect_ratio = w / h
-            
-            # 2. 验证人脸在画面中的位置（避免边缘误判）
-            # 要求人脸中心位于画面的20%-80%区域内
-            face_center_x = x + w // 2
-            face_center_y = y + h // 2
-            is_centered = 0.2 * frame_width < face_center_x < 0.8 * frame_width and \
-                         0.1 * frame_height < face_center_y < 0.8 * frame_height
-            
-            # 3. 计算人脸相对于画面的比例
-            face_ratio = (w * h) / (frame_width * frame_height)
-            
-            # 4. 可选的眼睛检测验证
-            has_eyes = False
-            if eye_cascade is not None:
-                # 在人脸区域内检测眼睛
-                roi_gray = gray[y:y+h, x:x+w]
-                eyes = eye_cascade.detectMultiScale(roi_gray, scaleFactor=1.1, minNeighbors=5, minSize=(5, 5))
-                has_eyes = len(eyes) >= 1  # 至少检测到一只眼睛
-            
-            # 输出详细信息
-            print(f"  - 候选区域: x={x}, y={y}, 宽={w}, 高={h}")
-            print(f"    宽高比: {aspect_ratio:.2f}, 画面占比: {face_ratio:.2%}, 位置合理: {is_centered}")
-            if eye_cascade is not None:
-                print(f"    眼睛检测: {has_eyes}")
-            
-            # 综合判断：宽高比合理 + 位置合理
-            # 如果有眼睛检测器且开启了眼睛检测，则需要至少满足有眼睛
-            is_valid = (0.7 < aspect_ratio < 1.3) and is_centered
-            if eye_cascade is not None:
-                is_valid = is_valid and has_eyes
-            
-            if is_valid:
-                valid_faces.append((x, y, w, h))
-                print(f"    ✅ 区域验证通过")
-            else:
-                print(f"    ❌ 区域验证失败")
-        
-        # 更新检测结果为通过严格验证的人脸数量
-        if len(valid_faces) > 0:
-            print(f"✅ 最终确认: {len(valid_faces)}个有效人脸")
-        else:
-            print("❌ 所有候选区域均未通过验证")
-        
-        return len(valid_faces) > 0
-    
-    return False
+
+    if len(faces) == 0:
+        return False
+
+    valid_faces = []
+
+    for (x, y, w, h) in faces:
+        aspect_ratio = w / h
+        face_center_x = x + w // 2
+        face_center_y = y + h // 2
+        is_centered = (
+            0.2 * frame_width < face_center_x < 0.8 * frame_width and
+            0.1 * frame_height < face_center_y < 0.8 * frame_height
+        )
+
+        face_ratio = (w * h) / (frame_width * frame_height)
+
+        roi_gray = gray[y:y+h, x:x+w]
+        eyes = eye_cascade.detectMultiScale(roi_gray, scaleFactor=1.1, minNeighbors=5)
+        has_eyes = len(eyes) >= 1
+
+        is_valid = (0.7 < aspect_ratio < 1.3) and is_centered and has_eyes
+        if is_valid:
+            valid_faces.append((x, y, w, h))
+
+    return len(valid_faces) > 0
 
 
-def generate_random_thumbnail(video_path, overwrite=True, quality=100, size=None):
+def generate_random_thumbnail(video_path, output_path, overwrite=True, quality=100, size=None):
     """为视频生成随机封面图"""
-    if not os.path.isfile(video_path):
-        print(f"❌ 文件不存在: {video_path}")
-        return False
-
-    ext = os.path.splitext(video_path)[1].lower()
-    if ext not in [".mp4", ".mov", ".avi", ".mkv", ".wmv", ".flv", ".webm"]:
-        print(f"⚠️ 跳过非视频文件: {video_path}")
-        return False
-
+    # 不校验视频文件是否有效，直接尝试处理
     try:
-        folder = os.path.dirname(video_path)
-        name, _ = os.path.splitext(os.path.basename(video_path))
-        output_path = os.path.join(folder, f"poster.jpg")
-
-        # 默认覆盖已存在的文件
-        if os.path.exists(output_path) and not overwrite:
-            print(f"⚠️ 封面已存在，跳过: {output_path}")
-            return False
-        elif os.path.exists(output_path):
-            print(f"🔄 覆盖已存在的封面: {output_path}")
-
-        # 检查ffmpeg是否可用，提前给出友好提示
-        if not check_ffmpeg():
-            print(f"❌ ffmpeg不可用: 无法处理视频 {os.path.basename(video_path)}")
-            print("   请安装ffmpeg并添加到系统PATH后重试")
-            return False
-
+        # 检查文件是否存在
+        if not os.path.exists(video_path):
+            return False, f"视频文件不存在: {video_path}"
+        
         with get_video_clip(video_path) as clip:
-            try:
-                duration = clip.duration
-                if duration < 0.1:
-                    print(f"⚠️ 视频过短，跳过: {video_path}")
-                    return False
+            duration = clip.duration
+            if duration < 0.1:
+                return False, "视频过短"
 
-                # 尝试多次寻找有人脸的帧
-                frame = None
-                found_face = False
-                for _ in range(5):
-                    try:
-                        t = random.uniform(duration * 0.1, duration * 0.9)
-                        temp_frame = clip.get_frame(t)
-                        if has_face(temp_frame):
-                            frame = temp_frame
-                            found_face = True
-                            print(f"🧑‍🎤 检测到人脸，截取时间点: {t:.2f}s")
-                            break
-                    except Exception as frame_error:
-                        print(f"⚠️ 获取帧时出错: {frame_error}，尝试下一个时间点")
-                        continue
-                
-                if frame is None:
-                    # 未检测到人脸则使用随机帧
-                    try:
-                        t = random.uniform(duration * 0.1, duration * 0.9)
-                        frame = clip.get_frame(t)
-                        print(f"🎞️ 使用随机帧: {t:.2f}s")
-                    except Exception as frame_error:
-                        print(f"❌ 无法获取视频帧: {frame_error}")
-                        return False
+            frame = None
+            found_face = False
+            face_time = None
 
-                img = Image.fromarray(frame)
+            for _ in range(5):
+                t = random.uniform(duration * 0.1, duration * 0.9)
+                try:
+                    temp_frame = clip.get_frame(t)
+                    if has_face(temp_frame):
+                        frame = temp_frame
+                        found_face = True
+                        face_time = t
+                        break
+                except Exception as e:
+                    continue
 
-                if size is not None:
-                    try:
-                        img = img.resize(size, Image.LANCZOS)
-                    except Exception as resize_error:
-                        print(f"⚠️ 调整图片尺寸失败: {resize_error}，使用原始尺寸")
+            if frame is None:
+                t = random.uniform(duration * 0.1, duration * 0.9)
+                try:
+                    frame = clip.get_frame(t)
+                except Exception as e:
+                    return False, f"获取视频帧失败: {str(e)}"
 
-                img.save(output_path, "JPEG", quality=quality)
-                print(f"✅ 封面生成成功: {output_path}")
-                return True
-            except Exception as clip_error:
-                print(f"❌ 处理视频时出错: {clip_error}")
-                return False
+            img = Image.fromarray(frame)
 
-    except KeyboardInterrupt:
-        print("\n⚠️ 操作被用户中断")
-        raise
-    except IOError as e:
-        print(f"⚠️ IO错误: {video_path}\n原因: {e}")
-    except ValueError as e:
-        print(f"⚠️ 视频格式不支持: {video_path}\n原因: {e}")
-    except RuntimeError as e:
-        # 特别处理RuntimeError，通常是ffmpeg相关的错误
-        print(f"❌ ffmpeg错误: {e}")
+            if size:
+                try:
+                    img = img.resize(size, Image.LANCZOS)
+                except Exception as e:
+                    return False, f"调整图片尺寸失败: {str(e)}"
+
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            img.save(output_path, "JPEG", quality=quality)
+
+            result = {
+                "success": True,
+                "message": "封面生成成功",
+                "has_face": found_face,
+                "timestamp": face_time if found_face else t
+            }
+            return True, result
+
     except Exception as e:
-        print(f"⚠️ 处理失败: {video_path}\n原因: {e}")
-    return False
+        return False, f"处理视频失败: {str(e)}"
 
 
-def process_single_video(path, overwrite=True, quality=100, size=None):
-    """处理单个视频文件"""
-    if os.path.isfile(path):
-        return generate_random_thumbnail(path, overwrite, quality, size)
-    else:
-        print(f"❌ 无效的视频文件: {path}")
-        return False
+# Web界面模板
+HTML_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>视频封面生成工具</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .header {
+            background-color: #2c3e50;
+            color: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            text-align: center;
+        }
+        .container {
+            background-color: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        .file-browser {
+            margin-bottom: 20px;
+        }
+        .dir-list, .file-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        .item {
+            padding: 10px 15px;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: background-color 0.3s;
+            min-width: 150px;
+            text-align: center;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .dir {
+            background-color: #3498db;
+            color: white;
+        }
+        .dir:hover {
+            background-color: #2980b9;
+        }
+        .file {
+            background-color: #ecf0f1;
+            border: 1px solid #ddd;
+        }
+        .file:hover {
+            background-color: #bdc3c7;
+        }
+        .back-btn {
+            background-color: #95a5a6;
+            color: white;
+        }
+        .back-btn:hover {
+            background-color: #7f8c8d;
+        }
+        .current-path {
+            font-weight: bold;
+            margin-bottom: 10px;
+            color: #2c3e50;
+        }
+        .preview-container {
+            margin-top: 20px;
+            text-align: center;
+        }
+        .preview-img {
+            max-width: 100%;
+            max-height: 500px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            margin-top: 10px;
+        }
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 20px;
+        }
+        .spinner {
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+        .controls {
+            margin-top: 20px;
+            text-align: center;
+        }
+        button {
+            background-color: #27ae60;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background-color: #229954;
+        }
+        .quality-control {
+            margin: 15px 0;
+        }
+        .message {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .success {
+            background-color: #d4edda;
+            color: #155724;
+        }
+        .error {
+            background-color: #f8d7da;
+            color: #721c24;
+        }
+    </style>
+</head>
+<body>
+    <div class="header">
+        <h1>🎬 视频封面生成工具</h1>
+        <p>为您的视频自动生成高质量封面图</p>
+    </div>
+    
+    <div class="container">
+        <div class="file-browser">
+            <div class="current-path">当前路径: {{ current_path }}</div>
+            
+            <div class="dir-list">
+                {% if current_path != ROOT_DIR %}
+                <div class="item dir back-btn" onclick="navigateTo('..')">📁 .. (上级目录)</div>
+                {% endif %}
+                {% for dir in dirs %}
+                <div class="item dir" onclick="navigateTo('{{ dir }}')">📁 {{ dir }}</div>
+                {% endfor %}
+            </div>
+            
+            <div class="file-list">
+                {% for file in files %}
+                <div class="item file" onclick="selectFile('{{ file }}')">🎥 {{ file }}</div>
+                {% endfor %}
+            </div>
+        </div>
+        
+        <div class="controls">
+            <div class="quality-control">
+                <label for="quality">图片质量 (1-100): </label>
+                <input type="range" id="quality" min="1" max="100" value="100">
+                <span id="quality-value">100</span>
+            </div>
+            
+            <button id="generate-btn" onclick="generateThumbnail()" disabled>生成封面</button>
+        </div>
+        
+        <div class="loading" id="loading">
+            <div class="spinner"></div>
+            <p>正在生成封面，请稍候...</p>
+        </div>
+        
+        <div id="message" class="message" style="display: none;"></div>
+        
+        <div class="preview-container">
+            <h3>封面预览</h3>
+            <img id="preview-img" class="preview-img" src="" alt="预览图片" style="display: none;">
+        </div>
+    </div>
+    
+    <script>
+        let selectedFile = null;
+        const qualitySlider = document.getElementById('quality');
+        const qualityValue = document.getElementById('quality-value');
+        const generateBtn = document.getElementById('generate-btn');
+        const loading = document.getElementById('loading');
+        const message = document.getElementById('message');
+        const previewImg = document.getElementById('preview-img');
+        
+        qualitySlider.addEventListener('input', function() {
+            qualityValue.textContent = this.value;
+        });
+        
+        function navigateTo(path) {
+            window.location.href = `/?path=${encodeURIComponent(path)}`;
+        }
+        
+        function selectFile(file) {
+            // 移除其他文件的选中状态
+            document.querySelectorAll('.file-list .file').forEach(el => {
+                el.style.border = '1px solid #ddd';
+                el.style.backgroundColor = '#ecf0f1';
+            });
+            
+            // 设置当前选中文件
+            selectedFile = file;
+            const selectedEl = event.target;
+            selectedEl.style.border = '2px solid #3498db';
+            selectedEl.style.backgroundColor = '#d6eaf8';
+            
+            // 启用生成按钮
+            generateBtn.disabled = false;
+        }
+        
+        function showMessage(text, isSuccess = true) {
+            message.textContent = text;
+            message.className = `message ${isSuccess ? 'success' : 'error'}`;
+            message.style.display = 'block';
+        }
+        
+        function generateThumbnail() {
+            if (!selectedFile) return;
+            
+            loading.style.display = 'block';
+            message.style.display = 'none';
+            previewImg.style.display = 'none';
+            
+            const quality = qualitySlider.value;
+            const currentPath = new URLSearchParams(window.location.search).get('path') || '';
+            const filePath = currentPath ? `${currentPath}/${selectedFile}` : selectedFile;
+            
+            fetch('/generate', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    file_path: filePath,
+                    quality: parseInt(quality)
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                loading.style.display = 'none';
+                
+                if (data.success) {
+                    let message = `✅ 封面生成成功！${data.has_face ? '检测到人脸' : '使用随机帧'} 时间点: ${data.timestamp.toFixed(2)}s`;
+                    if (data.saved_path) {
+                        message += `<br>📁 已保存到视频同级目录`;
+                    }
+                    if (data.warning) {
+                        message += `<br>⚠️ ${data.warning}`;
+                    }
+                    showMessage(message);
+                    previewImg.src = `/preview?t=${Date.now()}`;
+                    previewImg.style.display = 'block';
+                } else {
+                    showMessage(`❌ ${data.error}`, false);
+                }
+            })
+            .catch(error => {
+                loading.style.display = 'none';
+                showMessage(`❌ 请求失败: ${error}`, false);
+            });
+        }
+    </script>
+</body>
+</html>
+'''
 
 
-def select_video_file():
-    """图形化选择单个视频文件"""
-    root = tk.Tk()
-    root.withdraw()
-    return filedialog.askopenfilename(
-        title="请选择视频文件",
-        filetypes=[("视频文件", "*.mp4 *.mov *.avi *.mkv *.wmv *.flv *.webm"), ("所有文件", "*.*")]
+@app.route('/')
+def index():
+    """首页 - 文件浏览器"""
+    # 不进行路径校验，默认使用当前目录
+    path = request.args.get('path', '')
+    full_path = os.path.join(ROOT_DIR, path).replace('\\', '/')
+    
+    # 确保路径在ROOT_DIR范围内，但不检查是否存在
+    if not full_path.startswith(ROOT_DIR):
+        full_path = ROOT_DIR
+        path = ''
+    
+    dirs = []
+    files = []
+    
+    # 尝试列出目录内容，不处理异常
+    try:
+        if os.path.exists(full_path) and os.path.isdir(full_path):
+            for item in os.listdir(full_path):
+                item_path = os.path.join(full_path, item)
+                if os.path.isdir(item_path):
+                    dirs.append(item)
+                elif os.path.isfile(item_path) and any(item.lower().endswith(ext) for ext in SUPPORTED_EXTS):
+                    files.append(item)
+    except:
+        pass  # 忽略错误，显示空列表
+    
+    return render_template_string(
+        HTML_TEMPLATE,
+        current_path=full_path,
+        ROOT_DIR=ROOT_DIR,
+        dirs=dirs,
+        files=files
     )
+
+
+@app.route('/generate', methods=['POST'])
+def generate():
+    """生成封面图API"""
+    data = request.json
+    file_path = data.get('file_path')
+    quality = data.get('quality', 100)
+    
+    if not file_path:
+        return jsonify({'success': False, 'error': '未指定文件路径'})
+    
+    # 构建完整路径，不校验路径有效性
+    full_path = os.path.join(ROOT_DIR, file_path).replace('\\', '/')
+    
+    # 只做基本的安全检查，确保在ROOT_DIR范围内
+    if not full_path.startswith(ROOT_DIR):
+        return jsonify({'success': False, 'error': '路径不允许'})
+    
+    # 生成临时输出路径
+    temp_output = os.path.join(TEMP_DIR, 'temp_thumbnail.jpg')
+    
+    # 生成同级目录输出路径 - 默认使用'poster.jpg'作为文件名
+    video_dir = os.path.dirname(full_path)
+    sidecar_output_path = os.path.join(video_dir, "poster.jpg")
+    
+    # 生成封面图（先生成到临时文件）
+    success, result = generate_random_thumbnail(full_path, temp_output, quality=quality)
+    
+    # 如果成功，复制到视频同级目录
+    if success:
+        try:
+            # 复制文件到视频同级目录
+            shutil.copy2(temp_output, sidecar_output_path)
+            print(f"✅ 封面已保存到: {sidecar_output_path}")
+            result['saved_path'] = sidecar_output_path
+        except Exception as e:
+            print(f"⚠️ 保存到同级目录失败: {e}")
+            # 仍然返回成功，但添加警告信息
+            result['warning'] = f"封面生成成功但无法保存到同级目录: {str(e)}"
+    
+    if success:
+        return jsonify({'success': True, **result})
+    else:
+        return jsonify({'success': False, 'error': result})
+
+
+@app.route('/preview')
+def preview():
+    """预览生成的封面图"""
+    temp_output = os.path.join(TEMP_DIR, 'temp_thumbnail.jpg')
+    
+    if os.path.exists(temp_output):
+        return send_file(temp_output, mimetype='image/jpeg')
+    else:
+        return jsonify({'error': '预览图不存在'}), 404
 
 
 def main():
-    parser = argparse.ArgumentParser(description="🎬 视频随机封面生成工具")
-    parser.add_argument("--path", help="视频文件路径")
-    parser.add_argument("--quality", type=int, default=100,
-                        help="JPEG图片质量 (1-100)，默认100")
-    parser.add_argument("--size", type=str, help="输出图片尺寸，格式为 'widthxheight'，例如 '1920x1080'")
-    args = parser.parse_args()
-
-    # 文件选择窗口
-    if not args.path:
-        print("📁 未提供路径，将打开文件选择窗口...")
-        args.path = select_video_file()
-        if not args.path:
-            print("❌ 未选择任何文件，程序退出。")
-            return
-
+    """启动Web服务"""
     # 检查ffmpeg
     if not check_ffmpeg():
-        print("⚠️ 警告: 未找到ffmpeg，这是视频处理的必要依赖。")
-        print("📥 下载地址: https://ffmpeg.org/download.html")
-        print("🔧 Windows安装指南:")
-        print("   1. 下载Windows版本的ffmpeg")
-        print("   2. 解压到一个文件夹，例如: C:\ffmpeg")
-        print("   3. 将C:\ffmpeg\bin添加到系统环境变量PATH中")
-        print("   4. 重启命令提示符或PowerShell")
-        
-        # 提供临时跳过选项（虽然功能受限）
-        try:
-            import tkinter as tk
-            from tkinter import messagebox
-            root = tk.Tk()
-            root.withdraw()  # 隐藏主窗口
-            if messagebox.askyesno("缺少ffmpeg", "未找到ffmpeg。是否继续？（功能将受限）"):
-                print("⚠️ 注意: 程序将在功能受限模式下运行，可能无法正常处理视频。")
-            else:
-                print("❌ 程序已退出，请安装ffmpeg后重试。")
-                return
-        except ImportError:
-            # 如果tkinter不可用，使用命令行确认
-            confirm = input("⚠️ 是否继续在功能受限模式下运行？(y/n): ")
-            if confirm.lower() != 'y':
-                print("❌ 程序已退出，请安装ffmpeg后重试。")
-                return
-
-    # 解析尺寸参数
-    size = None
-    if args.size:
-        try:
-            width, height = map(int, args.size.split('x'))
-            size = (width, height)
-        except ValueError:
-            print(f"❌ 无效的尺寸格式: {args.size}，请使用 'widthxheight'")
-            return
-
-    # 默认覆盖已存在的文件
-    overwrite = True
-    success = process_single_video(args.path, overwrite, args.quality, size)
+        print("❌ 警告: 未找到ffmpeg，这是视频处理的必要依赖。")
     
-    if success:
-        print("🎉 视频封面生成完成！")
-    else:
-        print("❌ 封面生成失败，请检查错误信息。")
+    # 确保必要的目录存在
+    os.makedirs(ROOT_DIR, exist_ok=True)
+    os.makedirs(TEMP_DIR, exist_ok=True)
+    
+    # 启动Flask服务
+    print("🚀 Web服务已启动")
+    print(f"📂 视频目录: {ROOT_DIR}")
+    print("🌐 访问 http://localhost:5000 使用Web界面")
+    
+    # 监听所有地址，以便在Docker容器中访问
+    app.run(host='0.0.0.0', port=5000, debug=False)
 
 
 if __name__ == "__main__":
