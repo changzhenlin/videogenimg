@@ -106,53 +106,69 @@ def generate_random_thumbnail(video_path, output_path, overwrite=True, quality=1
     except Exception as e:
         return False, f"处理视频失败: {str(e)}"
 
-def choose_video_file():
+def choose_folder():
     root = Tk()
     root.withdraw()
-    path = filedialog.askopenfilename(title="选择视频文件", filetypes=[("视频文件", "*.mp4;*.mov;*.avi;*.mkv;*.wmv;*.flv;*.webm"), ("所有文件", "*.*")])
+    path = filedialog.askdirectory(title="选择包含视频的文件夹")
     root.update()
     root.destroy()
     return path
 
 def main():
-    print("🎬 视频封面生成工具（交互选择视频，其余默认）")
+    print("🎬 视频封面生成工具（选择文件夹批量处理，其余默认）")
     if not check_ffmpeg():
         print("❌ 警告: 未找到ffmpeg，这是视频处理的必要依赖。")
-    video_path = choose_video_file()
-    if not video_path:
-        print("⚠️ 未选择视频文件")
-        return
-    ext = os.path.splitext(video_path)[1].lower()
-    if ext not in SUPPORTED_EXTS:
-        print("❌ 不支持的文件类型")
+    folder_path = choose_folder()
+    if not folder_path:
+        print("⚠️ 未选择文件夹")
         return
     quality = 100
     size = (1920, 1080)
     temp_dir = os.path.join(tempfile.gettempdir(), "thumbnails")
     os.makedirs(temp_dir, exist_ok=True)
     temp_output = os.path.join(temp_dir, "temp_thumbnail.jpg")
-    video_dir = os.path.dirname(video_path)
-    sidecar_output_path = os.path.join(video_dir, "poster.jpg")
-    print("⏳ 正在生成封面...")
-    success, result = generate_random_thumbnail(video_path, temp_output, quality=quality, size=size)
-    if success:
-        try:
-            shutil.copy2(temp_output, sidecar_output_path)
-            result["saved_path"] = sidecar_output_path
-        except Exception as e:
-            result["warning"] = f"封面生成成功但无法保存到同级目录: {str(e)}"
-        msg = "✅ 封面生成成功！"
-        msg += " 检测到人脸" if result.get("has_face") else " 使用随机帧"
-        ts = result.get("timestamp")
-        if isinstance(ts, (int, float)):
-            msg += f" 时间点: {ts:.2f}s"
-        if result.get("saved_path"):
-            msg += f"\n📁 已保存到: {result.get('saved_path')}"
-        if result.get("warning"):
-            msg += f"\n⚠️ {result.get('warning')}"
-        print(msg)
-    else:
-        print(f"❌ {result}")
+    def collect_videos(root_dir, max_depth=2):
+        result = []
+        def walk(dir_path, depth):
+            try:
+                for name in os.listdir(dir_path):
+                    p = os.path.join(dir_path, name)
+                    if os.path.isfile(p) and any(name.lower().endswith(ext) for ext in SUPPORTED_EXTS):
+                        result.append(p)
+                    elif os.path.isdir(p) and depth < max_depth:
+                        walk(p, depth + 1)
+            except Exception:
+                pass
+        walk(root_dir, 0)
+        return result
+    videos = collect_videos(folder_path, max_depth=2)
+    if not videos:
+        print("⚠️ 选中文件夹下未发现支持的视频文件")
+        return
+    print(f"⏳ 共找到 {len(videos)} 个视频，开始生成封面...")
+    for video_path in videos:
+        print(f"🎞️ 处理: {os.path.basename(video_path)}")
+        success, result = generate_random_thumbnail(video_path, temp_output, quality=quality, size=size)
+        if success:
+            try:
+                base = os.path.splitext(os.path.basename(video_path))[0]
+                sidecar_output_path = os.path.join(os.path.dirname(video_path), f"poster.jpg")
+                shutil.copy2(temp_output, sidecar_output_path)
+                result["saved_path"] = sidecar_output_path
+            except Exception as e:
+                result["warning"] = f"封面生成成功但无法保存到同级目录: {str(e)}"
+            msg = "✅ 封面生成成功！"
+            msg += " 检测到人脸" if result.get("has_face") else " 使用随机帧"
+            ts = result.get("timestamp")
+            if isinstance(ts, (int, float)):
+                msg += f" 时间点: {ts:.2f}s"
+            if result.get("saved_path"):
+                msg += f"\n📁 已保存到: {result.get('saved_path')}"
+            if result.get("warning"):
+                msg += f"\n⚠️ {result.get('warning')}"
+            print(msg)
+        else:
+            print(f"❌ {os.path.basename(video_path)} 生成失败: {result}")
 
 if __name__ == "__main__":
     main()
