@@ -64,31 +64,87 @@ def generate_random_thumbnail(video_path, output_path, overwrite=True, quality=1
     try:
         if not os.path.exists(video_path):
             return False, f"视频文件不存在: {video_path}"
-        with get_video_clip(video_path) as clip:
-            duration = clip.duration
-            if duration < 0.1:
-                return False, "视频过短"
-            frame = None
+        try:
+            with get_video_clip(video_path) as clip:
+                duration = clip.duration
+                if duration < 0.1:
+                    return False, "视频过短"
+                frame = None
+                found_face = False
+                face_time = None
+                for _ in range(5):
+                    t = random.uniform(duration * 0.1, duration * 0.9)
+                    try:
+                        temp_frame = clip.get_frame(t)
+                        if has_face(temp_frame):
+                            frame = temp_frame
+                            found_face = True
+                            face_time = t
+                            break
+                    except Exception:
+                        continue
+                if frame is None:
+                    t = random.uniform(duration * 0.1, duration * 0.9)
+                    try:
+                        frame = clip.get_frame(t)
+                    except Exception as e:
+                        return False, f"获取视频帧失败: {str(e)}"
+                img = Image.fromarray(frame)
+                if size:
+                    try:
+                        img = img.resize(size, Image.LANCZOS)
+                    except Exception as e:
+                        return False, f"调整图片尺寸失败: {str(e)}"
+                os.makedirs(os.path.dirname(output_path), exist_ok=True)
+                img.save(output_path, "JPEG", quality=quality)
+                result = {
+                    "success": True,
+                    "message": "封面生成成功",
+                    "has_face": found_face,
+                    "timestamp": face_time if found_face else t
+                }
+                return True, result
+        except Exception:
+            cap = cv2.VideoCapture(video_path)
+            if not cap.isOpened():
+                return False, "无法打开视频"
+            fps = cap.get(cv2.CAP_PROP_FPS)
+            frames = cap.get(cv2.CAP_PROP_FRAME_COUNT)
+            duration = frames / fps if fps and fps > 0 and frames and frames > 0 else None
+            frame_rgb = None
             found_face = False
             face_time = None
+            t_used = 0
             for _ in range(5):
-                t = random.uniform(duration * 0.1, duration * 0.9)
-                try:
-                    temp_frame = clip.get_frame(t)
-                    if has_face(temp_frame):
-                        frame = temp_frame
-                        found_face = True
-                        face_time = t
-                        break
-                except Exception:
+                if duration:
+                    t = random.uniform(duration * 0.1, duration * 0.9)
+                    idx = int(t * fps)
+                else:
+                    if frames and frames > 0:
+                        idx = int(random.uniform(0.1, 0.9) * frames)
+                        t = idx / fps if fps and fps > 0 else 0
+                    else:
+                        idx = 0
+                        t = 0
+                cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, bgr = cap.read()
+                if not ret:
                     continue
-            if frame is None:
-                t = random.uniform(duration * 0.1, duration * 0.9)
-                try:
-                    frame = clip.get_frame(t)
-                except Exception as e:
-                    return False, f"获取视频帧失败: {str(e)}"
-            img = Image.fromarray(frame)
+                rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+                if has_face(rgb):
+                    frame_rgb = rgb
+                    found_face = True
+                    face_time = t
+                    t_used = t
+                    break
+                else:
+                    frame_rgb = rgb
+                    t_used = t
+            if frame_rgb is None:
+                cap.release()
+                return False, "无法读取视频帧"
+            cap.release()
+            img = Image.fromarray(frame_rgb)
             if size:
                 try:
                     img = img.resize(size, Image.LANCZOS)
@@ -100,7 +156,7 @@ def generate_random_thumbnail(video_path, output_path, overwrite=True, quality=1
                 "success": True,
                 "message": "封面生成成功",
                 "has_face": found_face,
-                "timestamp": face_time if found_face else t
+                "timestamp": face_time if found_face else t_used
             }
             return True, result
     except Exception as e:
