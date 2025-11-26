@@ -125,10 +125,70 @@ def collect_videos(root_dir, max_depth=2):
     walk(root_dir, 0)
     return result
 
+def create_video_folders(videos):
+    """为多个视频文件创建单独的文件夹并移动视频文件"""
+    # 首先按目录分组视频文件
+    videos_by_dir = {}
+    for video_path in videos:
+        dir_path = os.path.dirname(video_path)
+        if dir_path not in videos_by_dir:
+            videos_by_dir[dir_path] = []
+        videos_by_dir[dir_path].append(video_path)
+    
+    # 处理每个目录中的视频
+    new_video_paths = []
+    moved_count = 0
+    
+    for dir_path, dir_videos in videos_by_dir.items():
+        # 如果目录中只有一个视频，不需要创建子文件夹
+        if len(dir_videos) <= 1:
+            new_video_paths.extend(dir_videos)
+            continue
+        
+        # 目录中有多个视频，为每个视频创建单独的文件夹
+        for video_path in dir_videos:
+            video_name = os.path.basename(video_path)
+            # 移除扩展名作为文件夹名
+            folder_name = os.path.splitext(video_name)[0]
+            # 确保文件夹名有效（移除特殊字符）
+            folder_name = ''.join(c for c in folder_name if c.isalnum() or c in (' ', '-', '_'))
+            # 如果文件夹名为空，使用默认名称
+            if not folder_name:
+                folder_name = f"video_{moved_count + 1}"
+            
+            # 创建新文件夹
+            new_folder_path = os.path.join(dir_path, folder_name)
+            try:
+                # 如果文件夹已存在，添加数字后缀避免覆盖
+                counter = 1
+                base_folder_path = new_folder_path
+                while os.path.exists(new_folder_path):
+                    new_folder_path = f"{base_folder_path}_{counter}"
+                    counter += 1
+                
+                os.makedirs(new_folder_path, exist_ok=True)
+                
+                # 移动视频文件到新文件夹
+                new_video_path = os.path.join(new_folder_path, video_name)
+                shutil.move(video_path, new_video_path)
+                new_video_paths.append(new_video_path)
+                moved_count += 1
+                print(f"📁 已将 '{video_name}' 移动到新文件夹 '{folder_name}'")
+            except Exception as e:
+                print(f"⚠️ 移动文件 '{video_name}' 失败: {str(e)}")
+                # 如果移动失败，使用原路径
+                new_video_paths.append(video_path)
+    
+    if moved_count > 0:
+        print(f"✅ 共移动 {moved_count} 个视频文件到单独的文件夹")
+    
+    return new_video_paths
+
 def main():
     """主函数 - 简化版批量处理视频"""
     print("🎬 视频封面生成工具（简化版）")
     print("⚡ 模式: 随机截取视频帧，快速生成封面")
+    print("📂 功能: 自动为多视频文件夹创建单独目录结构")
     
     # 检查cv2是否可用
     try:
@@ -174,13 +234,18 @@ def main():
         print("⚠️ 选中文件夹下未发现支持的视频文件")
         return
     
-    # 批量处理
-    print(f"⏳ 共找到 {len(videos)} 个视频，开始生成封面...")
-    success_count = 0
+    print(f"⏳ 共找到 {len(videos)} 个视频，开始处理...")
     
-    for i, video_path in enumerate(videos, 1):
+    # 为多个视频创建单独的文件夹
+    videos_to_process = create_video_folders(videos)
+    
+    # 批量处理视频生成封面
+    success_count = 0
+    print(f"\n🎨 开始为 {len(videos_to_process)} 个视频生成封面...")
+    
+    for i, video_path in enumerate(videos_to_process, 1):
         video_name = os.path.basename(video_path)
-        print(f"\n🎞️ 处理 ({i}/{len(videos)}): {video_name}")
+        print(f"\n🎞️ 处理 ({i}/{len(videos_to_process)}): {video_name}")
         
         # 生成封面
         success, result = generate_thumbnail(video_path, temp_output, quality=quality, size=size)
@@ -201,7 +266,8 @@ def main():
             print(f"❌ 失败: {result}")
     
     # 总结
-    print(f"\n📊 处理完成: 成功 {success_count} / {len(videos)}")
+    print(f"\n📊 处理完成: 成功 {success_count} / {len(videos_to_process)}")
+    print("✨ 现在每个视频文件都位于单独的文件夹中，并配有对应的封面图片")
 
 if __name__ == "__main__":
     main()
