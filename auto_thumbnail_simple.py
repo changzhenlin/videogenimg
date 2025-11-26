@@ -242,28 +242,46 @@ def main():
     # 批量处理视频生成封面
     success_count = 0
     print(f"\n🎨 开始为 {len(videos_to_process)} 个视频生成封面...")
-    
+
     for i, video_path in enumerate(videos_to_process, 1):
         video_name = os.path.basename(video_path)
         print(f"\n🎞️ 处理 ({i}/{len(videos_to_process)}): {video_name}")
-        
-        # 生成封面
-        success, result = generate_thumbnail(video_path, temp_output, quality=quality, size=size)
-        
-        if success:
-            try:
-                # 保存到视频同级目录，命名为poster.jpg
-                sidecar_output_path = os.path.join(os.path.dirname(video_path), "poster.jpg")
-                shutil.copy2(temp_output, sidecar_output_path)
-                success_count += 1
-                
-                frame_idx = result.get("frame_index")
-                print(f"✅ 成功! 帧索引: {frame_idx}")
-                print(f"📁 保存到: {sidecar_output_path}")
-            except Exception as e:
-                print(f"⚠️ 封面生成成功但保存失败: {str(e)}")
+
+        folder = os.path.dirname(video_path)
+        poster_path = os.path.join(folder, "poster.jpg")
+        fanart_path = os.path.join(folder, "fanart.jpg")
+
+        if os.path.exists(poster_path):
+            print("➡️ 跳过 poster.jpg（已存在）")
         else:
-            print(f"❌ 失败: {result}")
+            success_poster, result_poster = generate_thumbnail(video_path, temp_output, quality=quality, size=size)
+            if success_poster:
+                try:
+                    shutil.copy2(temp_output, poster_path)
+                    success_count += 1
+                    frame_idx = result_poster.get("frame_index")
+                    print(f"✅ poster.jpg 生成成功，帧索引: {frame_idx}")
+                    print(f"📁 保存到: {poster_path}")
+                except Exception as e:
+                    print(f"⚠️ poster.jpg 生成成功但保存失败: {str(e)}")
+            else:
+                print(f"❌ poster.jpg 生成失败: {result_poster}")
+
+        if os.path.exists(fanart_path):
+            print("➡️ 跳过 fanart.jpg（已存在）")
+        else:
+            success_fanart, result_fanart = generate_thumbnail(video_path, temp_output, quality=quality, size=size)
+            if success_fanart:
+                try:
+                    shutil.copy2(temp_output, fanart_path)
+                    success_count += 1
+                    frame_idx = result_fanart.get("frame_index")
+                    print(f"✅ fanart.jpg 生成成功，帧索引: {frame_idx}")
+                    print(f"📁 保存到: {fanart_path}")
+                except Exception as e:
+                    print(f"⚠️ fanart.jpg 生成成功但保存失败: {str(e)}")
+            else:
+                print(f"❌ fanart.jpg 生成失败: {result_fanart}")
     
     # 总结
     print(f"\n📊 处理完成: 成功 {success_count} / {len(videos_to_process)}")
