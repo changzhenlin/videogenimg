@@ -125,6 +125,21 @@ def collect_videos(root_dir, max_depth=2):
     walk(root_dir, 0)
     return result
 
+def check_image_files_identical(file1_path, file2_path):
+    """检查两个图片文件是否大小相同（简单判断是否可能为相同图片）"""
+    try:
+        if not os.path.exists(file1_path) or not os.path.exists(file2_path):
+            return False
+        
+        # 比较文件大小
+        size1 = os.path.getsize(file1_path)
+        size2 = os.path.getsize(file2_path)
+        
+        return size1 == size2
+    except Exception as e:
+        print(f"⚠️ 检查图片文件时出错: {str(e)}")
+        return False
+
 def create_video_folders(videos):
     """为多个视频文件创建单独的文件夹并移动视频文件"""
     # 首先按目录分组视频文件
@@ -267,9 +282,23 @@ def main():
             else:
                 print(f"❌ poster.jpg 生成失败: {result_poster}")
 
+        # 检查是否需要重新生成fanart（当poster和fanart存在且大小相同时）
+        need_regenerate_fanart = False
         if os.path.exists(fanart_path):
-            print("➡️ 跳过 fanart.jpg（已存在）")
+            if os.path.exists(poster_path) and check_image_files_identical(poster_path, fanart_path):
+                print("🔄 发现poster和fanart相同，准备重新生成fanart")
+                try:
+                    os.remove(fanart_path)
+                    need_regenerate_fanart = True
+                    print("🗑️ 已删除相同的fanart")
+                except Exception as e:
+                    print(f"⚠️ 删除fanart失败: {str(e)}")
+            else:
+                print("➡️ 跳过 fanart.jpg（已存在且与poster不同）")
         else:
+            need_regenerate_fanart = True
+        
+        if need_regenerate_fanart:
             success_fanart, result_fanart = generate_thumbnail(video_path, temp_output, quality=quality, size=size)
             if success_fanart:
                 try:
