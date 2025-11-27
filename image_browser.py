@@ -16,12 +16,16 @@ class ImageBrowser:
         
         # 当前文件夹路径
         self.current_folder = ""
-        # 图片路径列表
+        # 原始图片路径列表（未筛选的完整列表）
+        self.original_image_paths = []
+        # 筛选后的图片路径列表
         self.image_paths = []
         # 当前选中的图片索引
         self.selected_index = -1
         # 当前预览窗口
         self.preview_window = None
+        # 当前筛选关键词
+        self.current_filter = ""
         
         # 创建UI
         self.create_ui()
@@ -43,6 +47,39 @@ class ImageBrowser:
         self.menu_bar.add_cascade(label="操作", menu=self.action_menu)
         self.action_menu.add_command(label="删除选中图片", command=self.delete_selected_image)
         self.action_menu.add_command(label="刷新列表", command=self.refresh_images)
+        
+        # 添加搜索筛选区域
+        self.search_frame = tk.Frame(self.root)
+        self.search_frame.pack(fill=tk.X, padx=10, pady=5)
+        
+        # 搜索标签
+        search_label = tk.Label(self.search_frame, text="搜索图片名称:", font=self.font_config)
+        search_label.pack(side=tk.LEFT, padx=5)
+        
+        # 搜索输入框
+        self.search_entry = tk.Entry(self.search_frame, font=self.font_config, width=40)
+        self.search_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
+        # 支持回车键触发搜索
+        self.search_entry.bind('<Return>', lambda event: self.filter_images())
+        
+        # 搜索按钮
+        self.search_btn = tk.Button(
+            self.search_frame, 
+            text="搜索", 
+            command=self.filter_images,
+            font=self.font_config
+        )
+        self.search_btn.pack(side=tk.LEFT, padx=5)
+        
+        # 清除筛选按钮
+        self.clear_filter_btn = tk.Button(
+            self.search_frame, 
+            text="清除筛选", 
+            command=self.clear_filter,
+            font=self.font_config,
+            state=tk.DISABLED  # 初始禁用
+        )
+        self.clear_filter_btn.pack(side=tk.LEFT, padx=5)
         
         # 创建状态栏
         self.status_var = tk.StringVar()
@@ -243,6 +280,7 @@ class ImageBrowser:
         # 清空列表
         self.image_listbox.delete(0, tk.END)
         self.image_paths = []
+        self.original_image_paths = []
         
         # 递归查找所有JPG图片
         jpg_files = []
@@ -254,20 +292,30 @@ class ImageBrowser:
         # 按文件名排序
         jpg_files.sort()
         
-        # 添加到列表
-        for img_path in jpg_files:
-            # 显示完整路径
-            self.image_listbox.insert(tk.END, img_path)
-            self.image_paths.append(img_path)
+        # 更新原始图片列表
+        self.original_image_paths = jpg_files.copy()
         
-        # 更新状态栏
-        self.status_var.set(f"找到 {len(self.image_paths)} 张图片 - {self.current_folder}")
-        
-        # 禁用删除按钮
-        self.delete_btn.config(state=tk.DISABLED)
-        
-        # 创建并显示图片缩略图
-        self.create_image_thumbnails()
+        # 根据当前是否有筛选条件决定显示哪些图片
+        if self.current_filter:
+            # 如果有筛选条件，应用筛选
+            self.filter_images()
+        else:
+            # 没有筛选条件，显示所有图片
+            self.image_paths = self.original_image_paths.copy()
+            
+            # 添加到列表
+            for img_path in self.image_paths:
+                # 显示完整路径
+                self.image_listbox.insert(tk.END, img_path)
+            
+            # 更新状态栏
+            self.status_var.set(f"找到 {len(self.image_paths)} 张图片 - {self.current_folder}")
+            
+            # 禁用删除按钮
+            self.delete_btn.config(state=tk.DISABLED)
+            
+            # 创建并显示图片缩略图
+            self.create_image_thumbnails()
     
     def on_image_select(self, event):
         """当选择图片时更新状态，支持多选"""
@@ -369,6 +417,9 @@ class ImageBrowser:
                 failed_count = 0
                 failed_paths = []
                 
+                # 获取要删除的图片路径列表
+                paths_to_delete = [self.image_paths[idx] for idx in selection]
+                
                 # 按索引倒序删除，避免索引变化问题
                 for index in sorted(selection, reverse=True):
                     try:
@@ -380,6 +431,11 @@ class ImageBrowser:
                         failed_count += 1
                         failed_paths.append(f"{self.image_paths[index]}: {str(e)}")
                 
+                # 从原始列表中也删除这些图片
+                for path in paths_to_delete:
+                    if path in self.original_image_paths:
+                        self.original_image_paths.remove(path)
+                
                 # 重置选中状态
                 self.selected_index = -1
                 
@@ -388,10 +444,15 @@ class ImageBrowser:
                 
                 # 更新状态栏
                 if deleted_count > 0:
-                    self.status_var.set(f"已删除 {deleted_count} 张图片 - 剩余 {len(self.image_paths)} 张图片")
+                    if self.current_filter:
+                        self.status_var.set(f"筛选结果: 已删除 {deleted_count} 张图片 - 剩余 {len(self.image_paths)} 张匹配图片")
+                    else:
+                        self.status_var.set(f"已删除 {deleted_count} 张图片 - 剩余 {len(self.image_paths)} 张图片")
                 else:
                     # 恢复原始状态栏显示
-                    if self.current_folder:
+                    if self.current_filter:
+                        self.status_var.set(f"筛选结果: 找到 {len(self.image_paths)} 张匹配'{self.current_filter}'的图片")
+                    elif self.current_folder:
                         self.status_var.set(f"找到 {len(self.image_paths)} 张图片 - {self.current_folder}")
                     else:
                         self.status_var.set("请选择一个包含JPG图片的文件夹")
@@ -419,6 +480,69 @@ class ImageBrowser:
         """刷新图片列表"""
         if self.current_folder:
             self.load_images()
+    
+    def filter_images(self):
+        """根据输入的关键词筛选图片名称"""
+        # 获取搜索关键词
+        keyword = self.search_entry.get().strip().lower()
+        self.current_filter = keyword
+        
+        if not keyword:
+            # 如果关键词为空，直接调用清除筛选
+            self.clear_filter()
+            return
+        
+        # 根据关键词筛选图片
+        self.image_paths = []
+        for img_path in self.original_image_paths:
+            # 获取文件名（不含扩展名）和扩展名
+            img_name = os.path.basename(img_path).lower()
+            # 检查关键词是否在文件名中
+            if keyword in img_name:
+                self.image_paths.append(img_path)
+        
+        # 更新UI显示
+        self._update_display()
+        
+        # 启用清除筛选按钮
+        self.clear_filter_btn.config(state=tk.NORMAL)
+        
+        # 更新状态栏
+        self.status_var.set(f"筛选结果: 找到 {len(self.image_paths)} 张匹配'{keyword}'的图片")
+    
+    def clear_filter(self):
+        """清除筛选条件，显示所有图片"""
+        # 重置筛选关键词
+        self.search_entry.delete(0, tk.END)
+        self.current_filter = ""
+        
+        # 恢复原始图片列表
+        self.image_paths = self.original_image_paths.copy()
+        
+        # 更新UI显示
+        self._update_display()
+        
+        # 禁用清除筛选按钮
+        self.clear_filter_btn.config(state=tk.DISABLED)
+        
+        # 更新状态栏
+        self.status_var.set(f"找到 {len(self.image_paths)} 张图片 - {self.current_folder}")
+    
+    def _update_display(self):
+        """更新列表框和缩略图显示"""
+        # 清空列表
+        self.image_listbox.delete(0, tk.END)
+        
+        # 添加筛选后的图片路径到列表
+        for img_path in self.image_paths:
+            self.image_listbox.insert(tk.END, img_path)
+        
+        # 重置选中状态
+        self.selected_index = -1
+        self.delete_btn.config(state=tk.DISABLED)
+        
+        # 重建缩略图网格
+        self.create_image_thumbnails()
 
 if __name__ == "__main__":
     root = tk.Tk()
