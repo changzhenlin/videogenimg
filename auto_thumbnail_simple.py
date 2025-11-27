@@ -38,8 +38,16 @@ def check_ffmpeg():
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
 
-def generate_thumbnail(video_path, output_path, quality=100, size=None):
-    """为视频生成随机封面图 - 简化版，直接随机截取一帧"""
+def generate_thumbnail(video_path, output_path, quality=100, size=None, vertical=False):
+    """为视频生成随机封面图 - 简化版，直接随机截取一帧
+    
+    参数:
+    video_path: 视频文件路径
+    output_path: 输出图片路径
+    quality: 图片质量(1-100)
+    size: 输出图片尺寸，None表示不调整尺寸
+    vertical: 是否生成竖截图(2:3比例)
+    """
     try:
         # 检查文件是否存在
         if not os.path.exists(video_path):
@@ -76,12 +84,45 @@ def generate_thumbnail(video_path, output_path, quality=100, size=None):
         if not ret:
             return False, "无法读取视频帧"
         
-        # 转换颜色空间并保存
+        # 转换颜色空间
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb_frame)
         
-        # 调整尺寸（如果需要）
-        if size:
+        # 处理竖截图（2:3比例）
+        if vertical:
+            # 获取原图尺寸
+            width, height = img.size
+            
+            # 计算2:3比例的裁剪区域
+            # 目标是保持高度不变，调整宽度
+            target_ratio = 2 / 3  # 2:3的比例
+            target_width = int(height * target_ratio)
+            
+            # 确保目标宽度不超过原图宽度
+            if target_width > width:
+                target_width = width
+                # 如果宽度不够，以宽度为准计算高度
+                target_height = int(width / target_ratio)
+                if target_height > height:
+                    target_height = height
+                # 居中裁剪
+                top = (height - target_height) // 2
+                bottom = top + target_height
+                left = 0
+                right = width
+            else:
+                # 居中裁剪宽度
+                left = (width - target_width) // 2
+                right = left + target_width
+                top = 0
+                bottom = height
+            
+            # 裁剪图片
+            img = img.crop((left, top, right, bottom))
+            print(f"✂️ 已裁剪为2:3竖截图: {target_width}x{int(target_width/target_ratio)}")
+        
+        # 调整尺寸（如果需要）- 仅对非竖截图使用
+        elif size:
             try:
                 img = img.resize(size, Image.LANCZOS)
             except Exception as e:
@@ -235,8 +276,8 @@ def main():
         return
     
     # 设置参数
-    quality = 100  # 最高质量
-    size = (1920, 1080)  # 默认1080p
+    quality = 100  # 最高质量 - 保持原图质量
+    size = None  # 不调整尺寸，保持原始大小
     
     # 创建临时目录
     temp_dir = os.path.join(tempfile.gettempdir(), "thumbnails")
@@ -269,7 +310,8 @@ def main():
         if os.path.exists(poster_path):
             print("➡️ 跳过 poster.jpg（已存在）")
         else:
-            success_poster, result_poster = generate_thumbnail(video_path, temp_output, quality=quality, size=size)
+            print("🖼️ 正在生成2:3比例竖截图作为poster...")
+            success_poster, result_poster = generate_thumbnail(video_path, temp_output, quality=quality, vertical=True)
             if success_poster:
                 try:
                     shutil.copy2(temp_output, poster_path)
@@ -299,6 +341,8 @@ def main():
             need_regenerate_fanart = True
         
         if need_regenerate_fanart:
+            print("🎨 正在生成fanart...")
+            # fanart保持原有逻辑，不使用竖截图
             success_fanart, result_fanart = generate_thumbnail(video_path, temp_output, quality=quality, size=size)
             if success_fanart:
                 try:
