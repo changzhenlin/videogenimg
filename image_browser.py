@@ -285,6 +285,9 @@ class ImageBrowser:
         # 递归查找所有JPG图片
         jpg_files = []
         for root, dirs, files in os.walk(self.current_folder):
+            # 过滤掉以trickplay结尾和以320开头的文件夹
+            dirs[:] = [d for d in dirs if not d.endswith('trickplay') and not d.startswith('320')]
+            
             for file in files:
                 if file.lower().endswith('.jpg'):
                     jpg_files.append(os.path.join(root, file))
