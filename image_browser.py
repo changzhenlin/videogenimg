@@ -135,6 +135,12 @@ class ImageBrowser:
         # 绑定画布大小变化事件
         self.image_grid_frame.bind("<Configure>", self.on_frame_configure)
         self.preview_canvas.bind("<Configure>", self.on_canvas_configure)
+        self.preview_canvas.bind("<MouseWheel>", self.on_preview_mousewheel)
+        self.image_grid_frame.bind("<MouseWheel>", self.on_preview_mousewheel)
+        self.preview_canvas.bind("<Button-4>", self.on_preview_mousewheel_linux)
+        self.preview_canvas.bind("<Button-5>", self.on_preview_mousewheel_linux)
+        self.image_grid_frame.bind("<Button-4>", self.on_preview_mousewheel_linux)
+        self.image_grid_frame.bind("<Button-5>", self.on_preview_mousewheel_linux)
         
         # 创建底部按钮
         self.button_frame = tk.Frame(self.root)
@@ -173,6 +179,18 @@ class ImageBrowser:
         # 当画布大小变化时，更新内部框架的宽度
         width = event.width
         self.preview_canvas.itemconfig(self.preview_canvas.find_all()[0], width=width)
+
+    def on_preview_mousewheel(self, event):
+        delta = event.delta
+        if delta == 0:
+            return
+        self.preview_canvas.yview_scroll(int(-1 * (delta / 120)), "units")
+
+    def on_preview_mousewheel_linux(self, event):
+        if event.num == 4:
+            self.preview_canvas.yview_scroll(-1, "units")
+        elif event.num == 5:
+            self.preview_canvas.yview_scroll(1, "units")
     
     def create_image_thumbnails(self):
         """创建并显示所有图片的缩略图"""
@@ -374,6 +392,9 @@ class ImageBrowser:
             canvas.config(xscrollcommand=h_scrollbar.set, yscrollcommand=v_scrollbar.set)
             h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
             v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            canvas.bind("<MouseWheel>", lambda e, c=canvas: c.yview_scroll(int(-1 * (e.delta / 120)), "units"))
+            canvas.bind("<Button-4>", lambda e, c=canvas: c.yview_scroll(-1, "units"))
+            canvas.bind("<Button-5>", lambda e, c=canvas: c.yview_scroll(1, "units"))
             
             try:
                 # 打开图片

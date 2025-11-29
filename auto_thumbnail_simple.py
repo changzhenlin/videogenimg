@@ -38,104 +38,127 @@ def check_ffmpeg():
     except (subprocess.SubprocessError, FileNotFoundError):
         return False
 
-def generate_thumbnail(video_path, output_path, quality=100, size=None, vertical=False):
-    """为视频生成随机封面图 - 简化版，直接随机截取一帧
-    
-    参数:
-    video_path: 视频文件路径
-    output_path: 输出图片路径
-    quality: 图片质量(1-100)
-    size: 输出图片尺寸，None表示不调整尺寸
-    vertical: 是否生成竖截图(2:3比例)
-    """
+def _ffprobe_duration(video_path):
     try:
-        # 检查文件是否存在
+        out = subprocess.run([
+            "ffprobe", "-v", "error", "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1", video_path
+        ], stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True, text=True)
+        return float(out.stdout.strip())
+    except Exception:
+        return None
+
+def generate_thumbnail(video_path, output_path, quality=100, size=None, vertical=False):
+    try:
         if not os.path.exists(video_path):
             return False, f"视频文件不存在: {video_path}"
-        
-        # 使用OpenCV打开视频
+
+        if check_ffmpeg():
+            duration = _ffprobe_duration(video_path)
+            if duration and duration > 0.2:
+                t = random.uniform(duration * 0.1, duration * 0.9)
+            else:
+                t = 10
+            vf_parts = []
+            if size and len(size) == 2:
+                vf_parts.append(f"scale={size[0]}:{size[1]}")
+            else:
+                vf_parts.append("scale=min(1920\\,iw):-2")
+            vf = ",".join(vf_parts)
+            cmd = [
+                "ffmpeg", "-hide_banner", "-loglevel", "error", "-hwaccel", "auto",
+                "-ss", f"{t}", "-i", video_path,
+                "-frames:v", "1", "-vf", vf,
+                "-q:v", "2", "-y", output_path
+            ]
+            try:
+                subprocess.run(cmd, check=True)
+                # 如需竖截图或进一步尺寸调整，使用PIL进行后处理
+                try:
+                    post_img = Image.open(output_path)
+                    if vertical:
+                        w, h = post_img.size
+                        target_ratio = 2 / 3
+                        target_w = int(h * target_ratio)
+                        if target_w > w:
+                            target_w = w
+                            target_h = int(w / target_ratio)
+                            if target_h > h:
+                                target_h = h
+                            top = (h - target_h) // 2
+                            bottom = top + target_h
+                            left = 0
+                            right = w
+                        else:
+                            left = (w - target_w) // 2
+                            right = left + target_w
+                            top = 0
+                            bottom = h
+                        post_img = post_img.crop((left, top, right, bottom))
+                    elif size and len(size) == 2:
+                        post_img = post_img.resize(size, Image.LANCZOS)
+                    post_img.save(output_path, "JPEG", quality=quality)
+                except Exception:
+                    pass
+                frame_idx = None
+                try:
+                    cap_meta = cv2.VideoCapture(video_path)
+                    fps = cap_meta.get(cv2.CAP_PROP_FPS)
+                    frame_idx = int(t * fps) if fps and fps > 0 else None
+                    cap_meta.release()
+                except Exception:
+                    frame_idx = None
+                return True, {"success": True, "message": "封面生成成功", "frame_index": frame_idx}
+            except Exception:
+                pass
+
         cap = cv2.VideoCapture(video_path)
-        if not cap.isOpened():
+        if not hasattr(cv2, 'VideoCapture') or not cap.isOpened():
             return False, "无法打开视频文件"
-        
-        # 获取视频帧数
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
         if total_frames <= 0:
             cap.release()
             return False, "无法获取视频帧数"
-        
-        # 随机选择一帧（避开前10%和后10%的帧，避免黑屏或结束画面）
         start_frame = int(total_frames * 0.1)
         end_frame = int(total_frames * 0.9)
         if start_frame >= end_frame:
             start_frame = 0
             end_frame = total_frames - 1
-        
         target_frame = random.randint(start_frame, end_frame)
-        
-        # 跳转到目标帧
         cap.set(cv2.CAP_PROP_POS_FRAMES, target_frame)
-        
-        # 读取帧
         ret, frame = cap.read()
         cap.release()
-        
         if not ret:
             return False, "无法读取视频帧"
-        
-        # 转换颜色空间
         rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img = Image.fromarray(rgb_frame)
-        
-        # 处理竖截图（2:3比例）
         if vertical:
-            # 获取原图尺寸
             width, height = img.size
-            
-            # 计算2:3比例的裁剪区域
-            # 目标是保持高度不变，调整宽度
-            target_ratio = 2 / 3  # 2:3的比例
+            target_ratio = 2 / 3
             target_width = int(height * target_ratio)
-            
-            # 确保目标宽度不超过原图宽度
             if target_width > width:
                 target_width = width
-                # 如果宽度不够，以宽度为准计算高度
                 target_height = int(width / target_ratio)
                 if target_height > height:
                     target_height = height
-                # 居中裁剪
                 top = (height - target_height) // 2
                 bottom = top + target_height
                 left = 0
                 right = width
             else:
-                # 居中裁剪宽度
                 left = (width - target_width) // 2
                 right = left + target_width
                 top = 0
                 bottom = height
-            
-            # 裁剪图片
             img = img.crop((left, top, right, bottom))
-            print(f"✂️ 已裁剪为2:3竖截图: {target_width}x{int(target_width/target_ratio)}")
-        
-        # 调整尺寸（如果需要）- 仅对非竖截图使用
         elif size:
             try:
                 img = img.resize(size, Image.LANCZOS)
             except Exception as e:
                 return False, f"调整图片尺寸失败: {str(e)}"
-        
-        # 确保输出目录存在
         os.makedirs(os.path.dirname(output_path), exist_ok=True)
-        
-        # 保存图片
         img.save(output_path, "JPEG", quality=quality)
-        
         return True, {"success": True, "message": "封面生成成功", "frame_index": target_frame}
-        
     except Exception as e:
         return False, f"处理视频失败: {str(e)}"
 
