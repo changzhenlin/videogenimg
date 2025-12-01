@@ -1,5 +1,6 @@
 import os
 import sys
+import random
 import tempfile
 import shutil
 from tkinter import Tk, filedialog
@@ -66,34 +67,34 @@ def collect_videos(root_dir, max_depth=2):
     
     return result
 
-def add_text_to_image(image_path, text, output_path=None, center=False):
+def add_text_to_image(image_path, text, output_path=None, center=False, keep_original=False):
     """在图片上添加文字
     
     参数:
     image_path: 原始图片路径
     text: 要添加的文字
-    output_path: 输出图片路径，如果为None则覆盖原图
+    output_path: 输出图片路径，如果为None则根据keep_original参数决定
     center: 是否居中显示文字
-    
-    返回:
-    bool: 是否成功
-    str: 错误信息（如果失败）
-    """
-    """在图片上添加文字
-    
-    参数:
-    image_path: 原始图片路径
-    text: 要添加的文字
-    output_path: 输出图片路径，如果为None则覆盖原图
+    keep_original: 是否保留原始图片
     
     返回:
     bool: 是否成功
     str: 错误信息（如果失败）
     """
     try:
-        # 如果未指定输出路径，覆盖原图
+        # 处理输出路径和保留原图的逻辑
         if output_path is None:
-            output_path = image_path
+            if keep_original:
+                # 保留原图，创建一个带前缀的新文件
+                dir_path = os.path.dirname(image_path)
+                base_name = os.path.basename(image_path)
+                name, ext = os.path.splitext(base_name)
+                # 生成随机六位数作为后缀
+                random_suffix = str(random.randint(100000, 999999))
+                output_path = os.path.join(dir_path, f"{name}_{random_suffix}{ext}")
+            else:
+                # 不保留原图，直接覆盖
+                output_path = image_path
         
         # 打开图片
         img = Image.open(image_path)
@@ -173,6 +174,21 @@ def main():
     print("🔍 支持的视频格式: " + ", ".join(SUPPORTED_EXTS))
     print("💡 使用提示: 按Ctrl+C可随时终止程序")
     
+    # 添加是否保留原图的配置选项
+    keep_original = True
+    try:
+        user_input = input("🔄 是否保留原始图片文件? (y/n，默认为y): ")
+        if user_input.lower() == 'n':
+            keep_original = False
+    except KeyboardInterrupt:
+        print("\n⚠️ 用户中断操作，程序已停止")
+        return
+    except Exception:
+        # 如果输入出错，使用默认值True
+        keep_original = True
+    
+    print(f"📋 配置: {'保留原图' if keep_original else '直接替换原图'}")
+    
     try:
         # 选择文件夹
         folder_path = choose_folder()
@@ -216,7 +232,7 @@ def main():
                     print(f"  🖼️ 找到poster.jpg")
                     
                     # 将文字合成到poster.jpg（不居中）
-                    success, error_msg = add_text_to_image(poster_path, title_text_poster, center=False)
+                    success, error_msg = add_text_to_image(poster_path, title_text_poster, center=False, keep_original=keep_original)
                     if success:
                         print(f"  ✅ 成功添加文字到poster.jpg")
                         processed_count += 1
@@ -238,7 +254,7 @@ def main():
                     print(f"  🖼️ 找到fanart.jpg")
                     
                     # 将文字合成到fanart.jpg（居中显示）
-                    success, error_msg = add_text_to_image(fanart_path, title_text_fanart, center=True)
+                    success, error_msg = add_text_to_image(fanart_path, title_text_fanart, center=True, keep_original=keep_original)
                     if success:
                         print(f"  ✅ 成功添加文字到fanart.jpg")
                         processed_count += 1
@@ -262,6 +278,7 @@ def main():
         print("\n💡 提示:")
         print("  - poster.jpg: 前5个字，底部靠左，使用微软雅黑字体")
         print("  - fanart.jpg: 前10个字，居中显示，使用微软雅黑字体")
+        print(f"  - 图片处理: {'保留原图，生成新文件（格式：原文件名_随机六位数.jpg）' if keep_original else '直接替换原图'}")
         
     except KeyboardInterrupt:
         print("\n⚠️ 用户中断操作，程序已停止")
